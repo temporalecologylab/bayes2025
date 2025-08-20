@@ -1,0 +1,1037 @@
+---
+title: |
+   | Generative modeling 
+   | of seed production 🌰
+author: 'How trees *mast*-er reproduction?'
+format:
+  revealjs: 
+    theme: [default, custom.scss]
+    auto-stretch: false
+    include-in-header:
+      - text: |
+          <style>
+          #title-slide .title {
+            font-size: 1.5em; /* Adjust the value as needed */
+            color: #F38181; /* Optional: Change color */
+          }
+          </style>
+---
+
+## How to explain seed production dynamics of trees?
+
+
+
+## How to explain seed production dynamics of trees?
+
+\
+
+::: {layout="[[100,-40], [100]]" style="text-align:center;font-size: 20px;color: #808080;font-family: sans-serif;"}
+
+![](pictures/beechacrosseurope_Szymkowiaketal2024.png)
+
+Figures from Szymkowiak et al. 2024
+
+:::
+
+\
+
+[**Masting**]{style="color:#95E1D3;"}, or mast seeding? Pulses of annual seed production
+
+## How to explain seed production dynamics of trees?
+
+\
+
+::: {layout="[[100,40], [100]]" style="text-align:center;font-size: 20px;color: #808080;font-family: sans-serif;"}
+
+![](pictures/beechacrosseurope_Szymkowiaketal2024.png)
+
+![](pictures/beechmap_Szymkowiaketal2024.png)
+
+Figures from Szymkowiak et al. 2024
+
+:::
+
+\
+
+[**Masting**]{style="color:#95E1D3;"}, or mast seeding? Pulses of annual seed production
+
+Supposedly [**synchronized**]{style="color:#95E1D3;"} across some spatial scale ("_subcontinental_")
+
+## Focus on beech in England! {.nostretch}
+
+::: {layout="[[20,30,-10]]" style="text-align:center;font-size: 20px;color: #808080;font-family: sans-serif;"}
+![](pictures/ebms_map.png)
+
+![](pictures/ebms_hist.png) Figures from Packham et al. 2008
+:::
+
+
+- "_ground search for seven minutes per tree_" $\rightarrow$ seed production at the [**individual scale**]{style="color:#95E1D3;"}?
+
+- from 1980 to now
+
+
+
+## Two probabilistic models?
+
+\
+
+Non-masting/masting: two different behaviors?
+
+```{r}
+#| echo: false
+#| eval: true
+
+wd <- "~/projects/seedsarentreal/analyses/methods"
+setwd(wd)
+util <- new.env()
+source(file.path(wd, "mcmc_analysis_tools_rstan.R"), local=util) 
+source(file.path(wd, "mcmc_visualization_tools.R"), local=util) 
+
+# Load data
+raw_data <- read.csv(file.path(wd, 'data',  'ebms', 'Beech_tree-ring_masting_data.csv'))
+clim_data <- readRDS(file.path(wd, 'data',  'ebms', 'era5land_sitesextract.rds'))
+
+# length(unique(paste0(raw_data$site.ID,raw_data$tree.ID))) # 57 unique trees
+# length(unique(raw_data$site.ID)) # 7 unique sites
+raw_data$uniqueID <- paste0(raw_data$site.ID, "_", raw_data$tree.ID)
+raw_data <- na.omit(raw_data[,c('site.ID', 'uniqueID', 'year', 'seeds')])
+
+# Sizes
+uniq_tree_ids <- unique(raw_data$uniqueID)
+N_trees <- length(uniq_tree_ids)
+first_year <- min(raw_data$year)
+last_year <- max(raw_data$year)
+max_years <- first_year:max(raw_data$year)
+N_max_years <- length(max_years)
+
+# Format data into ragged arrays
+seed_counts <- c()
+years <- c()
+prevsummer_temps <-c()
+spring_temps <-c()
+gdd_lastfrost <-c()
+N_years <- c()
+
+idx <- 1
+tree_start_idxs <- c()
+tree_end_idxs <- c()
+
+for (tid in uniq_tree_ids) {
+  
+  raw_data_tree <- raw_data[raw_data$uniqueID == tid,]
+  
+  years_tree <- raw_data_tree$year-first_year+1
+  years <- c(years, years_tree)
+  
+  N_years_tree <- length(years_tree)
+  N_years <- c(N_years, N_years_tree)
+  
+  seed_count_tree <- raw_data_tree$seeds
+  seed_counts <- c(seed_counts, seed_count_tree)
+  
+  prevsummer_temps_tree <- clim_data[clim_data$site.ID == raw_data_tree$site.ID[1] & clim_data$year %in% (max_years-1), 'meantmax_ja'] # all years, even those unobserved
+  prevsummer_temps <- c(prevsummer_temps, prevsummer_temps_tree)
+  
+  spring_temps_tree <- clim_data[clim_data$site.ID == raw_data_tree$site.ID[1] & clim_data$year %in% (max_years-1), 'meantmean_am'] # all years, even those unobserved
+  spring_temps <- c(spring_temps, spring_temps_tree)
+  
+  gdd_lastfrost_tree <- clim_data[clim_data$site.ID == raw_data_tree$site.ID[1] & clim_data$year %in% (max_years-1), 'gdd_b5_tolastfrost']/10 # all years, even those unobserved, in *10degC
+  gdd_lastfrost <- c(gdd_lastfrost, gdd_lastfrost_tree)
+  
+  tree_start_idxs <- c(tree_start_idxs, idx)
+  idx <- idx + N_years_tree
+  tree_end_idxs <- c(tree_end_idxs, idx - 1)
+  
+}
+
+par(mar = c(4,4,1,1))
+hist(raw_data$seeds, breaks=seq(0,650,l=40), col = '#f7b0b0', border = "white", xlab = 'Number of seeds', main = '')
+
+
+```
+
+## How to mix two (or more) behaviors?
+
+\
+
+Basic [**mixture model**]{style="color:#95E1D3;"}! 
+
+\
+
+::: {.fragment}
+$N$ observations $\{y_1, \ldots, y_i, \ldots, y_N \}$
+
+We introduce $K$ observational models, with parameters $\{\theta_1, \ldots, \theta_k, \ldots, \theta_K \}$
+:::
+
+::: {.fragment}
+And $N$ states to quantify which model is responsible for which observations: $\{z_1, \ldots, z_i, \ldots, z_N \}$
+:::
+\
+
+::: {.fragment}
+We don't know these states, they are [**latent**]{style="color:#95E1D3;"}
+:::
+
+::: {.fragment}
+And we model the probability of assignment: 
+
+$\forall i  \in [\![1,\mathrm{N}]\!] \hspace{1cm} p(z_i = k \mid \lambda_{1}, \ldots, \lambda_{K}) = \lambda_{k}$
+::: 
+
+## How to mix two (or more) behaviors?
+
+\ 
+
+In theory, we want to infer both the observational model parameters and the latent states:
+
+\begin{align*}
+p(z_i, \lambda, \theta
+ \mid y_i )
+&\propto
+p(y_i, z_i,
+  \lambda, \theta )
+\\
+&\propto
+
+p(y_i \mid z_i, \theta ) \,
+p(z_i \mid \lambda) \,
+p( \lambda ) \, p(\theta)
+\\
+\end{align*}
+
+\
+
+::: {.fragment}
+In practice we [**marginalize**]{style="color:#95E1D3;"} over all the possible assignments for $z_i$:
+
+\begin{align*}
+p(\lambda, \theta
+ \mid y_i )
+&\propto
+\sum_{k = 1}^{K} \bigg[
+p(y_i \mid z_i = k, \theta ) \, p(z_i = k \mid \lambda) 
+\bigg] \,
+p( \lambda ) \, p(\theta)
+\\
+\end{align*}
+::: 
+
+::: footer
+See Mike Betancourt's chapter on mixture modeling
+:::
+
+## Toy example in Stan {auto-animate="true"}
+
+\
+
+With two observationel models:
+
+```{stan, output.var="model"}
+#| echo: true
+#| eval: false
+
+data {
+  int N;
+  array[N] real y;
+}
+
+parameters {
+  real parameter1; // parameter for the 1st model
+  real parameter2; // parameter for the 2nd model
+  real<lower=0, upper=1> lambda; // probability of getting assigned to model 1
+}
+
+
+```
+
+## Toy example in Stan {auto-animate=true}
+
+\
+
+With two observationel models:
+
+```{stan, output.var="model"}
+#| echo: true
+#| eval: false
+
+data {
+  int N;
+  array[N] real y;
+}
+
+parameters {
+  real parameter1; // parameter for the 1st model
+  real parameter2; // parameter for the 2nd model
+  real<lower=0, upper=1> lambda; // probability of getting assigned to model 1
+}
+
+model {
+  
+  for (n in 1:N) {
+    target += log_mix(lambda,
+                      some_lpdf(y[n] | parameter1),
+                      some_lpdf(y[n] | parameter2));
+  }
+  
+  // + some priors
+}
+
+```
+
+
+
+## Going back to seeds!
+
+\
+
+Non-masting/masting: two different behaviors?
+
+::: {.r-stack}
+
+```{r}
+par(mar = c(4,4,1,1))
+hist(raw_data$seeds, breaks=seq(0,650,l=40), col = '#f7b0b0', border = "white", xlab = 'Number of seeds', main = '')
+```
+
+::: {.fragment}
+```{r}
+#| echo: false
+#| eval: true
+
+set.seed(12345)
+par(mar = c(4,4,1,1))
+nonmasting <- VGAM::rzipois(1000, lambda = 25, pstr0 = 0.7)
+hist(nonmasting, breaks=seq(0,650,l=40), col = '#bdece4', border = "white", xlab = 'Number of seeds', main = '')
+masting <- MASS::rnegbin(1000, 160, 2)
+hist(masting[masting < 650], breaks=seq(0,650,l=40), col = '#f7b0b0', border = "white", xlab = 'Number of seeds', main = '', add = TRUE)
+text(x = 80, y = 500, labels = 'zero-inflated\npoisson', col = '#95E1D3', font = 2)
+text(x = 200, y = 120, labels = 'negative binomial', col = '#F38181', font = 2)
+
+```
+:::
+
+::: {.fragment}
+```{r}
+#| echo: false
+#| eval: true
+
+set.seed(12345)
+par(mar = c(4,4,1,1))
+nonmasting <- VGAM::rzipois(1000, lambda = 25, pstr0 = 0.7)
+hist(nonmasting, breaks=seq(0,650,l=40), col = '#bdece4', border = "white", xlab = 'Number of seeds', main = '')
+masting <- MASS::rnegbin(1000, 160, 2)
+hist(masting[masting < 650], breaks=seq(0,650,l=40), col = '#f7b0b0', border = "white", xlab = 'Number of seeds', main = '', add = TRUE)
+text(x = 80, y = 500, labels = 'zero-inflated\npoisson', col = '#95E1D3', font = 2)
+text(x = 200, y = 120, labels = 'negative binomial', col = '#F38181', font = 2)
+hist(raw_data$seeds, breaks=seq(0,650,l=40), col = NULL, border = "black", xlab = 'Number of seeds', main = '', add = TRUE)
+```
+:::
+
+::: {.fragment}
+```{r}
+#| echo: false
+#| eval: true
+
+set.seed(12345)
+par(mar = c(4,4,1,1))
+nonmasting <- VGAM::rzinegbin(1000, size = 0.5, munb = 40, pstr0 = 0.3)
+hist(nonmasting, breaks=seq(0,650,l=40), col = '#bdece4', border = "white", xlab = 'Number of seeds', main = '')
+masting <- MASS::rnegbin(1000, 160, 2)
+hist(masting[masting < 650], breaks=seq(0,650,l=40), col = '#f7b0b0', border = "white", xlab = 'Number of seeds', main = '', add = TRUE)
+text(x = 90, y = 500, labels = 'zero-inflated\nnegative binomial', col = '#95E1D3', font = 2)
+text(x = 200, y = 120, labels = 'negative binomial', col = '#F38181', font = 2)
+hist(raw_data$seeds, breaks=seq(0,650,l=40), col = NULL, border = "black", xlab = 'Number of seeds', main = '', add = TRUE)
+```
+:::
+
+:::
+
+
+## Stepping back: the model
+
+\
+
+Is this mixture model really [**generative**]{style="color:#95E1D3;"}? Are we happy?
+
+::: {.fragment}
+![](diagrams/basicmix.svg){}
+::: 
+
+::: {.fragment}
+We assume that the states (assignments) are [**independent**]{style="color:#95E1D3;"}...
+::: 
+
+
+## Stepping back: the model and the biology {.nostretch}
+
+- Flower buds for next year initiated [**at the same time**]{style="color:#95E1D3;"} that current year’s fruits are growing
+
+::: {.fragment}
+- If a tree is masting: most of the energy devoted to current fruit growth and ripening,  [**not to bud development**]{style="color:#95E1D3;"}
+::: 
+
+::: {.fragment}
+
+
+- '_Folk knowledge_'---yet never included in models!
+
+![](pictures/orchardnotes.png){.absolute bottom=0 right=-10 height='60%'}
+
+::: {style="text-align:center;font-size: 20px;color: #808080;font-family: sans-serif;"}
+\
+\
+\
+\
+\
+Screenshot from
+
+orchardnotes.com
+:::
+
+:::
+
+
+## Stepping back: the model and the biology
+
+\
+
+::: {.r-vstack .column width="100%"}
+
+![](diagrams/nonmast.png){fig-align="center" data-id="fruitmat1a" auto-animate-delay="0" style="background: #bdece4;  border: 3px solid black; width: 200px; height: 200px; border-radius: 200px;"}
+
+![](diagrams/mast.png){fig-align="center" data-id="fruitmat1b" auto-animate-delay="0" style="background: #f7b0b0;  border: 3px solid black; width: 200px; height: 200px; border-radius: 200px; margin-top: -20px; margin-bottom: -20px;"}
+
+[Non-masting]{style="color:#95E1D3;"}/[masting]{style="color:#F38181;"}
+
+:::
+
+
+## Stepping back: the model and the biology
+
+\
+
+::: {.r-hstack}
+
+::: {.r-vstack .column width="80%"}
+
+Previous year
+
+![](diagrams/nonmast.png){fig-align="center" data-id="fruitmat0a" auto-animate-delay="0" style="background: #bdece4;  border: 2px dashed black; width: 150px; height: 150px; border-radius: 150px;"}
+
+![](diagrams/mast.png){fig-align="center" data-id="fruitmat0b" auto-animate-delay="0" style="background: #f7b0b0;  border: 2px dashed black; width: 150px; height: 150px; border-radius: 150px; margin-top: -110px;"}
+
+:::
+
+$\rightarrow$
+
+::: {.r-vstack .column width="100%"}
+
+![](diagrams/nonmast.png){fig-align="center" data-id="fruitmat1a" auto-animate-delay="0" style="background: #bdece4;  border: 3px solid black; width: 200px; height: 200px; border-radius: 200px;"}
+
+![](diagrams/mast.png){fig-align="center" data-id="fruitmat1b" auto-animate-delay="0" style="background: #f7b0b0;  border: 3px solid black; width: 200px; height: 200px; border-radius: 200px; margin-top: -20px; margin-bottom: -20px;"}
+
+[Non-masting]{style="color:#95E1D3;"}/[masting]{style="color:#F38181;"}
+
+:::
+
+$\rightarrow$
+
+::: {.r-vstack .column width="80%"}
+
+Next year
+
+![](diagrams/nonmast.png){fig-align="center" data-id="fruitmat0a" auto-animate-delay="0" style="background: #bdece4;  border: 2px dashed black; width: 150px; height: 150px; border-radius: 150px;"}
+
+![](diagrams/mast.png){fig-align="center" data-id="fruitmat0b" auto-animate-delay="0" style="background: #f7b0b0;  border: 2px dashed black; width: 150px; height: 150px; border-radius: 150px; margin-top: -110px;"}
+
+:::
+
+:::
+
+
+## Stepping back: the model and the biology
+
+
+![](diagrams/basicmix.svg){fig-align="center"}
+
+
+## Stepping back: the model and the biology
+
+
+![](diagrams/hmmmix.svg){fig-align="center"}
+
+::: {.fragment}
+Each latent state should depend on its preceding state!
+:::
+
+::: {.fragment}
+$$\prod_{i = 1}^{N} p(y_i \mid z_i = k, \theta ) \, p(z_i = k \mid \lambda) $$
+::: 
+
+::: footer
+See Mike Betancourt's chapter on HMM
+:::
+
+## Stepping back: the model and the biology
+
+
+![](diagrams/hmmmix.svg){fig-align="center"}
+
+Each latent state should depend on its preceding state!
+
+$$p(z_{1}) \, p(y_{1} \mid 1, z_{1}, \theta) \prod_{i = 2}^{N} p(y_{i} \mid i, z_{i}, \theta) \, p(z_{i} \mid z_{i - 1}, \lambda)$$
+
+::: footer
+See Mike Betancourt's chapter on HMM
+:::
+
+
+## Stepping back: the model and the biology
+
+
+![](diagrams/hmmmix.svg){fig-align="center"}
+
+Each latent state should depend on its preceding state!
+
+$$\color{#95E1D3}{p(z_{1}) \, p(y_{1} \mid 1, z_{1}, \theta)} \prod_{i = 2}^{I}  p(y_{i} \mid i, z_{i}, \theta) \, p(z_{i} \mid \color{#F38181}{z_{i - 1}}, \lambda)$$
+
+$\rightarrow$ the [**Markovian**]{style="color:#F38181;"} assumption!
+
+::: footer
+See Mike Betancourt's chapter on HMM
+:::
+
+
+## Hidden Markov models (HMM) in practice
+
+\
+
+- initial state probability, $\color{#95E1D3}{p(z_{1})}$
+
+::: {.fragment}
+
+- transition probability matrix
+$$
+M =
+\begin{pmatrix}
+\tau_{\color{#95E1D3}{\text{non-mast.}} \rightarrow \color{#95E1D3}{\text{non-mast.}}} & \tau_{\color{#95E1D3}{\text{non-mast.}} \rightarrow \color{#F38181}{\text{masting}}} \\
+\tau_{\color{#F38181}{\text{masting}} \rightarrow \color{#95E1D3}{\text{non-mast.}}} & \tau_{\color{#F38181}{\text{masting}} \rightarrow \color{#F38181}{\text{masting}}}
+\end{pmatrix}
+$$
+
+:::
+
+::: {.fragment}
+::: columns
+
+::: {.column width="5%"}
+
+$$\ldots$$
+:::
+
+::: {.column width="10%"}
+::: {.r-vstack}
+
+![](diagrams/nonmast.png){fig-align="center" data-id="fruitmat0a" auto-animate-delay="0" style="background: #bdece4;  border: 2px solid black; width: 60px; height: 60px; border-radius: 60px;"}
+
+:::
+:::
+
+::: {.column width="10%"}
+
+$$\cdot M \longrightarrow$$
+
+:::
+
+::: {.column width="10%"}
+::: {.r-vstack}
+
+![](diagrams/mast.png){fig-align="center" data-id="fruitmat1a" auto-animate-delay="0" style="background: #f7b0b0;  border: 2px solid black; width: 60px; height: 60px; border-radius: 60px;"}
+
+:::
+:::
+
+::: {.column width="10%"}
+
+$$\cdot M \longrightarrow$$
+
+:::
+
+::: {.column width="10%"}
+
+
+![](diagrams/nonmast.png){fig-align="center" data-id="fruitmat2a" auto-animate-delay="0" style="background: #bdece4;  border: 2px solid black; width: 60px; height: 60px; border-radius: 60px;"}
+
+
+:::
+
+::: {.column width="5%"}
+
+$$\cdot M \longrightarrow \ldots$$
+:::
+
+
+
+:::
+
+Same matrix at each step: [**homogeneous**]{style="color:#95E1D3;"} HMM
+::: 
+
+::: footer
+See Mike Betancourt's chapter on HMM
+:::
+
+
+## Let me add some climate!
+
+![](diagrams/model1a.svg)
+
+
+## Let me add some climate!
+
+![](diagrams/model1b.svg)
+
+- previous summer influence flowerbud set: [**heterogeneous**]{style="color:#95E1D3;"} HMM
+
+:::{.fragment}
+$$
+M_i =
+\begin{pmatrix}
+1 - \tau_{\color{#95E1D3}{\text{nm.}} \rightarrow \color{#F38181}{\text{m}}}(\color{#ea7500}{T_i}) & \tau_{\color{#95E1D3}{\text{nm}} \rightarrow \color{#F38181}{\text{m}}}(\color{#ea7500}{T_i}) \\
+1 - \tau_{\color{#F38181}{\text{m}} \rightarrow \color{#F38181}{\text{m}}} & \tau_{\color{#F38181}{\text{m}} \rightarrow \color{#F38181}{\text{m}}}
+\end{pmatrix}
+$$
+:::
+
+## Let me add some climate!
+
+![](diagrams/model1c.svg)
+
+- previous summer influence flowerbud set: [**heterogeneous**]{style="color:#95E1D3;"} HMM
+- spring conditions (frost risk, warm spring) influence seed production
+
+## Retrodictive check
+
+
+```{r}
+# Load data
+raw_data <- read.csv(file.path(wd, 'data',  'ebms', 'Beech_tree-ring_masting_data.csv'))
+clim_data <- readRDS(file.path(wd, 'data',  'ebms', 'era5land_sitesextract.rds'))
+
+# length(unique(paste0(raw_data$site.ID,raw_data$tree.ID))) # 57 unique trees
+# length(unique(raw_data$site.ID)) # 7 unique sites
+raw_data$uniqueID <- paste0(raw_data$site.ID, "_", raw_data$tree.ID)
+raw_data <- na.omit(raw_data[,c('site.ID', 'uniqueID', 'year', 'seeds')])
+
+# Sizes
+uniq_tree_ids <- unique(raw_data$uniqueID)
+N_trees <- length(uniq_tree_ids)
+first_year <- min(raw_data$year)
+last_year <- max(raw_data$year)
+max_years <- first_year:max(raw_data$year)
+N_max_years <- length(max_years)
+
+# Format data into ragged arrays
+seed_counts <- c()
+years <- c()
+prevsummer_temps <-c()
+spring_temps <-c()
+gdd_lastfrost <-c()
+N_years <- c()
+
+idx <- 1
+tree_start_idxs <- c()
+tree_end_idxs <- c()
+
+for (tid in uniq_tree_ids) {
+  
+  raw_data_tree <- raw_data[raw_data$uniqueID == tid,]
+  
+  years_tree <- raw_data_tree$year-first_year+1
+  years <- c(years, years_tree)
+  
+  N_years_tree <- length(years_tree)
+  N_years <- c(N_years, N_years_tree)
+  
+  seed_count_tree <- raw_data_tree$seeds
+  seed_counts <- c(seed_counts, seed_count_tree)
+  
+  prevsummer_temps_tree <- clim_data[clim_data$site.ID == raw_data_tree$site.ID[1] & clim_data$year %in% (max_years-1), 'meantmax_ja'] # all years, even those unobserved
+  prevsummer_temps <- c(prevsummer_temps, prevsummer_temps_tree)
+  
+  spring_temps_tree <- clim_data[clim_data$site.ID == raw_data_tree$site.ID[1] & clim_data$year %in% (max_years-1), 'meantmean_am'] # all years, even those unobserved
+  spring_temps <- c(spring_temps, spring_temps_tree)
+  
+  gdd_lastfrost_tree <- clim_data[clim_data$site.ID == raw_data_tree$site.ID[1] & clim_data$year %in% (max_years-1), 'gdd_b5_tolastfrost']/10 # all years, even those unobserved, in *10degC
+  gdd_lastfrost <- c(gdd_lastfrost, gdd_lastfrost_tree)
+  
+  tree_start_idxs <- c(tree_start_idxs, idx)
+  idx <- idx + N_years_tree
+  tree_end_idxs <- c(tree_end_idxs, idx - 1)
+  
+}
+
+# Make some predictions!
+source(file.path(wd, 'climatic_trends.R'))
+years_to_predict <- first_year:2100
+trees_per_stand <- 5
+unique_stands <- unique(clim_data$site.ID)
+newtree_stand_idxs <- rep(which(unique_stands==unique_stands), each = trees_per_stand)
+N_newtrees <- length(newtree_stand_idxs)
+N_max_newyears <- length(years_to_predict)
+first_newyear <- first_year
+
+newyears <- c()
+newprevsummer_temps <-c()
+newspring_temps <-c()
+newgdd_lastfrost <-c()
+N_newyears <- c()
+
+idx <- 1
+newtree_start_idxs <- c()
+newtree_end_idxs <- c()
+
+for (i in 1:N_newtrees) {
+  
+  newyears_tree <- years_to_predict-first_newyear+1
+  newyears <- c(newyears, newyears_tree)
+  
+  N_newyears_tree <- length(newyears_tree)
+  N_newyears <- c(N_newyears, N_newyears_tree)
+  
+  newprevsummer_temps_tree <- newclim_data[newclim_data$site.ID == unique_stands[newtree_stand_idxs[i]] & newclim_data$year %in% years_to_predict, 'meantmax_ja'] 
+  newprevsummer_temps <- c(newprevsummer_temps, newprevsummer_temps_tree)
+  
+  newspring_temps_tree <- newclim_data[newclim_data$site.ID == unique_stands[newtree_stand_idxs[i]] & newclim_data$year %in% years_to_predict, 'meantmean_am'] 
+  newspring_temps <- c(newspring_temps, newspring_temps_tree)
+  
+  newgdd_lastfrost_tree <- newclim_data[newclim_data$site.ID == unique_stands[newtree_stand_idxs[i]] & newclim_data$year %in% years_to_predict, 'gdd_b5_tolastfrost']/10 
+  newgdd_lastfrost <- c(newgdd_lastfrost, newgdd_lastfrost_tree)
+  
+  newtree_start_idxs <- c(newtree_start_idxs, idx)
+  idx <- idx + N_newyears_tree
+  newtree_end_idxs <- c(newtree_end_idxs, idx - 1)
+  
+}
+
+
+# Format data
+N <- length(years)
+Nnew <- length(newyears)
+data <- mget(c('N', 'N_trees', 'N_max_years',
+               'N_years', 'tree_start_idxs', 'tree_end_idxs',
+               'seed_counts', 'years', 
+               'prevsummer_temps', 'spring_temps', 'gdd_lastfrost',
+               # for predictions
+               'Nnew', 'N_newtrees', 'N_max_newyears', 'newtree_stand_idxs',
+               'N_newyears', 'newtree_start_idxs', 'newtree_end_idxs','newyears', 
+               'newprevsummer_temps', 'newspring_temps', 'newgdd_lastfrost'
+               ))
+
+# Posterior quantification
+# fit <- stan(file= file.path(wd, "stan", "model2_treelevel_zinb_missing_rescaled_summertempfull_springfrost_springtemp_wpred.stan"),
+#             data=data, seed=5838299, chain = 4, cores = 4,
+#             warmup=10, iter=20, refresh=100)
+# saveRDS(fit, file = file.path(wd, 'output', 'fit_14august2025.rds'))
+
+fit <- readRDS(file = file.path(wd, 'output', 'fit_14august2025.rds'))
+samples <- util$extract_expectand_vals(fit)
+
+observed_idxs <- c()
+for (t in 1:data$N_trees){
+  idxs <- tree_start_idxs[t]:tree_end_idxs[t]
+  observed_idxs_tree <- N_max_years*(t-1)+years[idxs]
+  observed_idxs <- c(observed_idxs, observed_idxs_tree)
+}
+par(mfrow=c(1, 1), mar = c(4,4,2,2))
+names <- sapply(observed_idxs, function(n) paste0('seed_counts_pred[',n,']'))
+util$plot_hist_quantiles(samples[names], 'seed_counts_pred', 0, 340, 20,
+                         baseline_values=data$seed_counts, 
+                         xlab="Seed counts")
+
+```
+
+## Retrodictive check
+
+```{r}
+
+set.seed(12345)
+par(mfrow=c(2, 2), mar = c(4,4,2,2))
+
+for (t in sample(1:data$N_trees,4)) {
+  
+  idxs_tree <-(1+N_max_years*(t-1)):(N_max_years*t)
+  observed_idxs_tree <- tree_start_idxs[t]:tree_end_idxs[t]
+  observed_flags <- years[tree_start_idxs[t]:tree_end_idxs[t]]
+  
+  names <- sapply(idxs_tree,
+                  function(n) paste0('seed_counts_pred[', n, ']'))
+  xlab="Year"
+  xticklabs=first_year:last_year
+  ylab="Seed Counts"
+  display_ylim=c(0, 400)
+  main=paste("Tree", uniq_tree_ids[t])
+  
+  # Construct bins
+  N <- length(names)
+  bin_min <- 0.5
+  bin_max <- N + 0.5
+  bin_delta <- 1
+  breaks <- seq(bin_min, bin_max, bin_delta)
+  
+  plot_config <- util$configure_bin_plotting(breaks)
+  plot_idxs <- plot_config[[1]]
+  plot_xs <- plot_config[[2]]
+  
+  # Construct marginal quantiles
+  probs <- c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+  calc <- function(n) {
+    util$ensemble_mcmc_quantile_est(samples[[names[n]]], probs)
+  }
+  quantiles <- sapply(1:N, calc)
+  plot_quantiles <- do.call(cbind, lapply(plot_idxs,
+                                          function(n) quantiles[1:9, n]))
+  
+  delta <- 0.05 * (display_ylim[2] - display_ylim[1])
+  display_ylim[1] <- display_ylim[1] - delta
+  display_ylim[2] <- display_ylim[2] + delta      
+  
+  plot(1, type="n", main=main,
+       xlim=c(bin_min, bin_max), xlab=xlab, xaxt="n",
+       ylim=display_ylim, ylab=ylab)
+  axis(1, at=1:N, labels=xticklabs)    
+  
+  for(n in 1:N){
+    
+    idplot <- c(n*2-1, n*2)
+    polygon(c(plot_xs[idplot], rev(plot_xs[idplot])),
+            c(plot_quantiles[1,idplot], rev(plot_quantiles[9,idplot])),
+            col = ifelse(n%in%observed_flags, util$c_light, 'grey90'), border = NA)
+    polygon(c(plot_xs[idplot], rev(plot_xs[idplot])),
+            c(plot_quantiles[2,idplot], rev(plot_quantiles[8,idplot])),
+            col = ifelse(n%in%observed_flags, util$c_light_highlight, 'grey80'), border = NA)
+    polygon(c(plot_xs[idplot], rev(plot_xs[idplot])),
+            c(plot_quantiles[3,idplot], rev(plot_quantiles[7,idplot])),
+            col = ifelse(n%in%observed_flags, util$c_mid, 'grey70'), border = NA)
+    polygon(c(plot_xs[idplot], rev(plot_xs[idplot])),
+            c(plot_quantiles[4,idplot], rev(plot_quantiles[6,idplot])),
+            col = ifelse(n%in%observed_flags, util$c_mid_highlight, 'grey60'), border = NA)
+    
+    lines(plot_xs[idplot], plot_quantiles[5, idplot],
+          col= ifelse(n%in%observed_flags,util$c_dark, 'grey50'), lwd=2)
+  }
+  
+  for(i in observed_idxs_tree) {
+    lines(c(years[i] - 0.5, years[i] + 0.5),
+          rep(seed_counts[i], 2),
+          col="white", lwd=4)
+    lines(c(years[i] - 0.5, years[i] + 0.5),
+          rep(data$seed_counts[i], 2),
+          col="black", lwd=2)
+  }
+  
+}
+
+```
+
+## Posterior inference
+
+```{r}
+par(mfrow=c(2, 4), mar = c(4,4,2,2))
+
+util$plot_expectand_pushforward(samples[['rho0']], 
+                                24, flim=c(0, 1.1),
+                                display_name="rho0",)
+
+util$plot_expectand_pushforward(samples[['tau_nm_m0']], 
+                                25, flim=c(0, 1),
+                                display_name="tau_nm_m0",)
+
+util$plot_expectand_pushforward(samples[['beta_nm_m']], 25,
+                                display_name="beta_nm_m")
+
+util$plot_expectand_pushforward(samples[['tau_m_m0']], 
+                                25, flim=c(0, 1),
+                                display_name="tau_m_m0")
+
+util$plot_expectand_pushforward(samples[['lambda1']], 25,
+                                display_name="lambda1")
+
+util$plot_expectand_pushforward(samples[['lambda20']], 25,
+                                display_name="lambda20")
+
+util$plot_expectand_pushforward(samples[['beta_lambda2_frost']], 25,
+                                display_name="beta_lambda2_frost")
+
+util$plot_expectand_pushforward(samples[['beta_lambda2_spring']], 25,
+                                display_name="beta_lambda2_spring")
+
+```
+
+## Posterior inference
+
+\
+
+::: columns
+
+::: {.column width="50%"}
+
+```{r}
+library(ggplot2)
+
+logit <- function(p){
+  return(log(p/(1-p)))
+}
+
+invlogit <- function(r){
+  return(1/(1+exp(-r)))
+}
+
+temp0 <- 15
+tau_nm_m_df <- data.frame()
+for(temp_prevsummer in seq(10,30,0.1)){
+  tau_nm_m <- matrix(nrow = nrow(samples[['tau_nm_m0']]), ncol = ncol(samples[['tau_nm_m0']]))
+  for(c in 1:nrow(tau_nm_m)){
+    tau_nm_m[c,] <- sapply(1:ncol(tau_nm_m), function(i) invlogit(logit(samples[['tau_nm_m0']][c,i])+samples[['beta_nm_m']][c,i]*(temp_prevsummer-temp0)))
+  }
+  tau_nm_m_df <- rbind(tau_nm_m_df,
+                       data.frame(temp_prevsummer, t(util$ensemble_mcmc_quantile_est(tau_nm_m, probs = c(0.1,0.5,0.9)))))
+}
+ggplot() +
+  geom_line(data = tau_nm_m_df, aes(x = temp_prevsummer, y = X10.), color = 'black', linetype = 'dashed') +
+  geom_line(data = tau_nm_m_df,aes(x = temp_prevsummer, y = X90.), color = 'black', linetype = 'dashed') +
+  geom_line(data = tau_nm_m_df,aes(x = temp_prevsummer, y = X50.), color = 'black', linewidth = 1.5) +
+  geom_line(data = tau_nm_m_df,aes(x = temp_prevsummer, y = X50.), color = 'white', linewidth = 0.6) +
+  geom_boxplot(aes(x = data$prevsummer_temps, y = -0), inherit.aes = FALSE, width = 0.05) +
+  theme_classic() +
+  theme(axis.title = element_text(size = 20)) +
+  labs(y = 'Probability of transtion\nfrom non-masting to masting', x = 'Average previous summer max. temperature (degC)')
+
+```
+
+:::
+
+::: {.column width="50%"}
+
+```{r}
+gdd0 <- 15
+lambda2_df <- data.frame()
+for(gdd_lastfrost in seq(0,35,0.1)){
+  lambda2 <- matrix(nrow = nrow(samples[['lambda20']]), ncol = ncol(samples[['lambda20']]))
+  for(c in 1:nrow(lambda2)){
+    lambda2[c,] <- sapply(1:ncol(lambda2), function(i) exp(log(samples[['lambda20']][c,i]) +samples[['beta_lambda2_frost']][c,i]*(gdd_lastfrost-gdd0)))
+  }
+  lambda2_df <- rbind(lambda2_df,
+                      data.frame(gdd_lastfrost, t(util$ensemble_mcmc_quantile_est(lambda2, probs = c(0.1,0.5,0.9)))))
+}
+ggplot() +
+  geom_line(data = lambda2_df, aes(x = gdd_lastfrost, y = X10.), color = 'black', linetype = 'dashed') +
+  geom_line(data = lambda2_df,aes(x = gdd_lastfrost, y = X90.), color = 'black', linetype = 'dashed') +
+  geom_line(data = lambda2_df,aes(x = gdd_lastfrost, y = X50.), color = 'black', linewidth = 1.5) +
+  geom_line(data = lambda2_df,aes(x = gdd_lastfrost, y = X50.), color = 'white', linewidth = 0.6) +
+  geom_boxplot(aes(x = data$gdd_lastfrost, y = 120), inherit.aes = FALSE, width = 5) +
+  theme_classic() +
+  theme(axis.title = element_text(size = 22),
+        axis.text = element_text(size = 16)) +
+  labs(y = 'Masting intensity', x = 'GDD until the last frost day (x10degC)')
+
+```
+:::
+
+
+:::
+
+
+## Next steps
+
+- best strategy to [**separate**]{style="color:#95E1D3;"} climate effect from intrinsic transition \
+$\rightarrow$ is global warming really causing a '_breakdown_'?
+
+:::{.fragment}
+![](pictures/breakdown.png){width="50%"}
+:::
+
+## Next steps
+
+- best strategy to [**make predictions**]{style="color:#95E1D3;"} ('forecast')
+
+:::{.fragment}
+
+```{r}
+ggplot(data = newclim_data) +
+  facet_wrap(~site.ID, ncol = 3) +
+  geom_point(aes(x = year-1978, y = meantmax_ja), col = '#ADBE7CFF', size = 0.4) +
+  geom_smooth(aes(x = year-1978, y = meantmax_ja, linetype = year > 2024, group = ifelse(year <= 2024, 1, ifelse(year <= 2071, 2, 3))), # 
+              method = 'lm', se = FALSE, col = '#D06C9BFF') +
+  # stat_regline_equation(aes(x = year-1978, y = meantmax_ja),
+  #                       label.x = -1, label.y = 26.5, hjust = 0, col = '#D06C9BFF') +  
+  scale_x_continuous(breaks = seq(2,122,30), labels = 1978+seq(2,122,30)) +
+  labs(x = '') + 
+  theme_classic() +
+  theme(legend.position = 'none') +
+  labs(y = 'Average previous summer max. temperature (degC)')
+
+```
+
+:::
+
+
+## Next steps
+
+:::{.fragment}
+- ideas of [**ecology-relevant**]{style="color:#95E1D3;"} visualizations?
+:::
+
+:::{.fragment}
+
+```{r}
+
+par(mfrow = c(2,2), mar = c(4,4,1,1))
+for(s in 1:2){
+  trees_s <- which(data$newtree_stand_idxs==s)
+  names <- sapply(1:N_max_newyears, function(n) paste0('states_new_plot[',s, ',', n,']'))
+  util$plot_conditional_median_quantiles(samples, names, obs_xs = data$newprevsummer_temps[data$newtree_start_idxs[min(trees_s)]:data$newtree_end_idxs[min(trees_s)]],
+                                         bin_min = 16, bin_max = 29, bin_delta = 1,
+                                         ylab = 'Number of masting trees', xlab = 'Summer temperature')
+  names <- sapply(1:N_max_newyears, function(n) paste0('seed_counts_new_plot[',s, ',', n,']'))
+  util$plot_conditional_median_quantiles(samples, names, obs_xs = data$newprevsummer_temps[data$newtree_start_idxs[min(trees_s)]:data$newtree_end_idxs[min(trees_s)]],
+                                         bin_min = 16, bin_max = 29, bin_delta = 1,
+                                         ylab = 'Seed production', xlab = 'Summer temperature')
+}
+
+```
+
+:::
+
+
+## Next steps
+
+\
+Am I really happy with the model?
+
+:::{.fragment}
+![](diagrams/amihappy.svg)
+
+:::
+
+:::{.fragment}
+- spare energy to initiate flower buds?
+
+- thinning out is a common practice to balance fruit production between current and next year... more inspiration from '_folk knowledge_'?
+
+:::
+
+## Next steps
+
+- best strategy to [**separate**]{style="color:#95E1D3;"} climate effect from intrinsic transition
+
+- best strategy to [**make predictions**]{style="color:#95E1D3;"} ('forecast')
+
+- ideas of [**ecology-relevant**]{style="color:#95E1D3;"} visualizations?
+
+- are we happy with how [**generative**]{style="color:#95E1D3;"} is the model?
+
+
+
