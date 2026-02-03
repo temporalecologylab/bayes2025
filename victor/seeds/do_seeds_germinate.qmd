@@ -1,0 +1,309 @@
+---
+title: "Seed germination"
+format: 
+  revealjs:
+    self-contained: true
+    # inject CSS directly
+    header-includes: |
+      <style>
+      .reveal {
+        font-size: 26px; /* default is ~32px */
+      }
+      </style>
+---
+
+## Meta-analysis
+
+For different species, we have data on germination percentage:
+
+- across time  
+
+- across different treatments (e.g. higher temperature, etc.)  
+
+
+## Generative model
+
+\
+
+Let's first consider one seed.
+
+Our first hypothesis is that all seeds cannot germinate (they are not all *viable*).\
+This is a latent state!
+
+\
+
+Let $V_{k,s}$ be this latent viability for a seed $k$ (from a species $s$):
+
+$V_{k,s} \sim Bernoulli(p_{s})$
+
+
+## Generative model
+
+\ 
+
+Then let $G_{k,s}(t)$ be the germination at time t for this seed:
+
+$\mathbb{P}(G_{k,s}(t \leq \text{T}) ~|~ V_{k,s} = 1) = \text{F}_s(\text{T})$
+
+We note $\text{F}_s$ the CDF with some species-specific parameters.
+
+\
+
+We observe germination in discrete intervals, so we would rather look at:
+$\mathbb{P}(G_{k,s}(t \in~ ]\text{T}-1, \text{T}] ~) ~|~ V_{k,s} = 1) = \text{F}_s(\text{T}) - \text{F}_s(\text{T}-1)$
+
+## Generative model 
+
+\
+
+If we marginalize over the latent $V_{k,s}$:
+
+\begin{equation}
+\begin{split}
+  \mathbb{P}(G_{k,s}(t \in~ ]\text{T}-1, \text{T}] ~) & = \mathbb{P}(G_{k,s}(t \in~ ]\text{T}-1, \text{T}] ~) ~\cap~ V_{k,s} = 0) \\
+  & + \mathbb{P}(G_{k,s}(t \in~ ]\text{T}-1, \text{T}] ~) ~\cap~ V_{k,s} = 1) \\ 
+  & = \mathbb{P}(V_{k,s} = 1) \times \mathbb{P}(G_{k,s}(t \in~ ]\text{T}-1, \text{T}] ~) ~|~ V_{k,s} = 1) \\
+  & = p_{s} \times (~ \text{F}_s(\text{T}) - \text{F}_s(\text{T}-1) ~)
+\end{split}
+\end{equation}
+
+## Generative model
+
+\
+
+The germination trials are not ran for an infinite amount of time, but only until $\text{T}_\text{max}$. \
+The observations are thus censored!
+
+\
+
+The probability the seed never germinates is:
+
+\begin{equation}
+\begin{split}
+(1-p_{s}) + p_{s} \times \mathbb{P}(G_{k,s}(t > \text{T}_\text{max} ~) ~|~ V_{k,s} = 1) = \\
+(1-p_{s}) + p_{s} \times (1 -  \text{F}_s(\text{T}_\text{max}) )
+\end{split}
+\end{equation}
+
+## Generative model
+
+\ 
+
+Let's note:
+
+$\theta_0 = (1-p_{s}) + p_{s} \times (1 -  \text{F}_s(\text{T}_\text{max}) )$\
+\
+$\forall t \in [\![1,\text{T}_\text{max}]\!]$ \
+$~~ \theta_t = p_{s} \times (~ \text{F}_s(\text{t}) - \text{F}_s(\text{t}-1) ~)$
+
+\
+
+We do not observe only one seed $k$, but $N$ seeds:
+\begin{equation}
+\begin{split}
+Y_{s} = (&\text{seeds that never germinated}, \text{seeds germinated at time 1}, \\
+& \dots, \\
+& \text{seeds germinated at time} ~\text{T}_\text{max}
+)
+\end{split}
+\end{equation}
+
+\
+
+$Y_{s} \sim \text{Multinomial}(\theta_0, \theta_1, \dots, \theta_{\text{T}_\text{max}})$
+
+## Which CDF?
+
+\
+
+We have to choose a functional form for $\text{F}_s(\text{T})$ that makes sense (with our domain expertise).
+
+\
+
+For example, if we expect a constant rate of germination with time, we would use an exponential, etc. \
+Here we will start with a Gompertz curve: $\text{F}_s(\text{T}) = \exp \left(-\log(2) \times \exp \left(-\frac{2}{\log(2)} \times \beta \times (t - \tau) \right) \right)$
+
+```{r}
+
+gompertz <- function(t, beta, tau){
+  exp(-log(2)*exp(-2/log(2)*beta*(t-tau)))
+}
+
+beta <- 0.25
+tau <- 5
+curve(gompertz(x, beta, tau), from = 0, to = 12,
+      xlab = "Days", y = "Probability", bty = 'n', 
+      col = '#6497B1FF', lwd = 2.5)
+abline(v = tau, lty = 2, col = '#679C35FF', lwd = 2.5)
+text(x = tau -0.5, y = 0.1, labels = expression(tau), 
+     cex = 1.3, col = '#679C35FF')
+abline(a = -beta*tau+0.5, b = beta, lty = 2, col = '#CD1076FF', lwd = 2.5)
+text(x = tau +1, y = 0.9, labels = expression(beta), 
+     cex = 1.3, col = '#CD1076FF')
+```
+
+## Stan code
+
+```{stan, output.var="model"}
+#| echo: true
+#| eval: false
+
+functions {
+  real gompertz(real t, real beta, real tau) {
+    return exp(-log2() * exp( -(2 / log2()) 
+    * beta * (t - tau)));
+  }
+}
+
+data {
+  int<lower=1> Ntimes; // number of discrete intervals 
+  int<lower=0> d[Ntimes]; // day of obs., d at Ntimes = Tmax
+  int<lower=0> y[Ntimes+1]; // first element is #seeds that never germinated
+}
+
+parameters {
+  real<lower=0, upper=1> pv; // probability of viability
+  real<lower=0> beta; // beta > 0? that's my expectation
+  real<lower=0> tau;
+}
+
+transformed parameters {
+  vector<lower=0>[Ntimes+1] theta; //germination prob
+  
+  theta[2] = pv*(gompertz(d[1], beta, tau) - gompertz(0, beta, tau));
+  for (t in 2:Ntimes) {
+    theta[t+1] = pv*(gompertz(d[t], beta, tau) - gompertz(d[t-1], beta, tau));
+  }
+
+  theta[1] = (1-pv)+pv*(1-gompertz(d[Ntimes], beta, tau));
+  
+  theta = theta / sum(theta); //  for stability
+
+}
+
+model {
+  // priors, au pif
+  pv ~ beta(4,2);
+  tau ~ normal(10,3);
+  beta ~ normal(0,0.5/2.57);
+
+  // likelihood
+  y ~ multinomial(theta);
+}
+
+generated quantities {
+  int<lower=0> y_pred[Ntimes+1];
+
+  y_pred = multinomial_rng(theta, sum(y));
+}
+
+
+```
+
+## Simulate data
+
+```{r}
+#| echo: false
+#| message: false
+#| results: hide
+
+library(rstan)
+
+# observations
+Nseeds <- 200
+d <- cumsum(sample.int(10, 10))
+Ntimes <- length(d)
+
+# fake parameters
+pv   <- 0.85
+beta <- 0.1
+tau  <- 22
+
+input <- list(Nseeds = Nseeds, Ntimes = Ntimes, d = d,
+              pv = pv, beta = beta, tau = tau)
+
+simstan <- stan_model("simulate.stan")
+datasim <- sampling(simstan, input, chain = 1, iter = 1,
+                    algorithm = "Fixed_param", seed = 04022026)
+y_sim <- rstan::extract(datasim)$y_sim[1,]
+
+cum_germ <- cumsum(y_sim[-1]) / Nseeds
+plot(cum_germ ~ d, type = "p", 
+     xlab = "Days", ylab = "Germination rate",
+     ylim = c(0, 1), pch = 20, bty = 'n')
+lines(cum_germ ~ d, lty = 2)
+
+```
+
+## Fit model on simulated data
+
+
+```{r}
+#| echo: false
+#| message: false
+#| results: hide
+#| fig-height: 3
+
+util <- new.env()
+source('mcmc_analysis_tools_rstan.R', local=util)
+source('mcmc_visualization_tools.R', local=util)
+
+input <- list(Ntimes = Ntimes, d = d, y = y_sim)
+
+modelstan <- stan_model("model.stan")
+fit <- sampling(modelstan, input, chains = 4, cores = 4, seed = 04022026)
+
+samples <- util$extract_expectand_vals(fit)
+
+par(mfrow = c(1,3))
+
+util$plot_expectand_pushforward(samples[['pv']], 50, display_name = expression(p[v]),
+                                flim = c(0,1))
+abline(v = pv, lwd = 2, lty = 2, col = util$c_light_teal)
+prior <- rbeta(1e6, 4, 2)
+lines(density(prior),
+      lwd = 1.5, lty = 3, col = 'grey70')
+
+util$plot_expectand_pushforward(samples[['tau']], 100, display_name = expression(tau),
+                                flim = c(0,30))
+abline(v = tau, lwd = 2, lty = 2, col = util$c_mid_teal)
+prior <- abs(rnorm(1e6, 10, 3))
+lines(density(prior),
+      lwd = 1.5, lty = 3, col = 'grey70')
+
+util$plot_expectand_pushforward(samples[['beta']], 100, display_name = expression(beta),
+                                flim = c(0,0.5))
+abline(v = beta, lwd = 2, lty = 2, col = util$c_light_teal)
+prior <- rnorm(1e6, 0, 0.5/2.57)
+lines(density(prior),
+      lwd = 1.5, lty = 3, col = 'grey70')
+
+
+par(mfrow = c(1,1), mar = c(4,4,0.5,10))
+idxs <- 2:(input$Ntimes+1)
+names <- paste0('y_pred[', idxs, ']')
+util$plot_conn_pushforward_quantiles(samples, names, input$d,
+                                     xlab="Day", ylab="# germinated seeds (that day)")
+
+points(input$d, input$y[idxs], pch=16, cex=1, col="white")
+points(input$d, input$y[idxs], pch=16, cex=0.5, col="black")  
+
+```
+
+## Questions
+
+\
+
+- does this approach sound good to you?
+
+\
+
+- what to do when we don't know the number of seeds $N$ (i.e. we only have the %)
+
+\
+
+- domain expertise: what are you expectations in terms of treatment effects? on $p_{s}$, $\beta$, $\tau$...
+
+
+
+
